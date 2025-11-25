@@ -2,12 +2,25 @@ const { Telegraf } = require('telegraf');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
+// --- DEBUG SECTION ---
+console.log("--- DEBUG: ENVIRONMENT VARIABLES CHECK ---");
+console.log("Available Environment Keys:", Object.keys(process.env));
+
+if (process.env.TELEGRAM_BOT_TOKEN) {
+    console.log(`✅ TELEGRAM_BOT_TOKEN found (Length: ${process.env.TELEGRAM_BOT_TOKEN.length})`);
+} else {
+    console.error("❌ TELEGRAM_BOT_TOKEN is MISSING or UNDEFINED");
+}
+console.log("----------------------------------------");
+// ---------------------
+
 // Add stealth plugin to hide that this is a bot
 puppeteer.use(StealthPlugin());
 
 // Check if the token is available
 if (!process.env.TELEGRAM_BOT_TOKEN) {
     console.error("❌ Fatal Error: TELEGRAM_BOT_TOKEN is not set in environment variables.");
+    console.error("👉 ACTION REQUIRED: Go to Railway -> Variables and add 'TELEGRAM_BOT_TOKEN'. Then REDEPLOY.");
     process.exit(1);
 }
 
@@ -64,10 +77,7 @@ async function startAternosServer(ctx) {
             throw new Error('Login failed. Check your username/password.');
         }
 
-        // 2. Select Server (If you have multiple, it usually defaults to the last used, 
-        // but explicit selection is safer if you know the server ID. 
-        // For now, we assume the dashboard loads the main server).
-        
+        // 2. Select Server
         // If we are on the server list page (account with multiple servers), click the first one
         if (page.url().includes('/servers')) {
             await page.click('.server-body'); 
@@ -93,7 +103,6 @@ async function startAternosServer(ctx) {
         ctx.reply('🖱️ Start button clicked. Waiting for confirmation...');
 
         // 4. Handle Queue/Confirmation
-        // Aternos sometimes shows a "Confirm" modal or a "Yes, I accept the EULA" modal
         try {
             // Wait a moment for modals
             await new Promise(r => setTimeout(r, 2000));
@@ -115,12 +124,6 @@ async function startAternosServer(ctx) {
     } catch (error) {
         console.error(error);
         ctx.reply(`❌ Error: ${error.message}`);
-        
-        // Optional: Take a screenshot on error for debugging (requires setting up file sending)
-        // if (browser) {
-        //    const buffer = await browser.pages()[0].screenshot();
-        //    ctx.replyWithPhoto({ source: buffer });
-        // }
     } finally {
         if (browser) await browser.close();
     }
