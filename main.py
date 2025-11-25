@@ -2,9 +2,12 @@ import logging
 from telegram.ext import Updater, CommandHandler
 from aternos import Client
 
-ATERNOS_EMAIL = "your-aternos-email"
-ATERNOS_PASS = "your-aternos-password"
-BOT_TOKEN = "your-telegram-bot-token"
+import os
+
+ATERNOS_EMAIL = os.getenv("ATERNOS_EMAIL")
+ATERNOS_PASS = os.getenv("ATERNOS_PASS")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 
 def startserver(update, context):
     update.message.reply_text("Starting your Aternos server...")
