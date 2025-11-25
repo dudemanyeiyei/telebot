@@ -5,13 +5,10 @@ FROM node:22-slim
 WORKDIR /usr/src/app
 
 # Install system dependencies required for Puppeteer/Chromium to run in a headless environment.
-# Note: We use the 'slim' base image, so we need to add the necessary libraries.
-# The 'chromium' package is generally the most reliable way to get a compatible browser.
+# Crucially, we now include the 'chromium' package itself.
 RUN apt-get update \
     && apt-get install -y \
-    wget \
-    gnupg \
-    unzip \
+    chromium \
     libnss3 \
     libatk-bridge2.0-0 \
     libxkbcommon0 \
@@ -35,7 +32,7 @@ RUN npm install
 COPY . .
 
 # Set environment variable telling Puppeteer where to find the browser
-# This points to the system-installed Chromium path
+# This points to the system-installed Chromium path, which is now installed above
 ENV PUPPETEER_EXECUTABLE_PATH="/usr/bin/chromium"
 
 # Run the command to start your application
