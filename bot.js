@@ -5,6 +5,12 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 // Add stealth plugin to hide that this is a bot
 puppeteer.use(StealthPlugin());
 
+// Check if the token is available
+if (!process.env.TELEGRAM_BOT_TOKEN) {
+    console.error("❌ Fatal Error: TELEGRAM_BOT_TOKEN is not set in environment variables.");
+    process.exit(1);
+}
+
 // Initialize the bot with your token
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
