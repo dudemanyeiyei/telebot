@@ -30,12 +30,31 @@ if (!process.env.TELEGRAM_BOT_TOKEN) {
 // Initialize the bot with your token
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
+// Helper function to dump HTML content for debugging
+async function dumpHtmlContent(page, context) {
+    if (page) {
+        try {
+            const htmlContent = await page.content();
+            console.error(`--- PAGE CONTENT DUMP ON FAILURE (${context.toUpperCase()}) (START) ---`);
+            console.error(htmlContent);
+            console.error(`--- PAGE CONTENT DUMP ON FAILURE (${context.toUpperCase()}) (END) ---`);
+            return `The raw page HTML for step '${context}' has been dumped to the logs for inspection.`;
+        } catch (dumpError) {
+            console.error(`Error dumping HTML: ${dumpError.message}`);
+            return `Failed to dump page HTML for step '${context}'.`;
+        }
+    }
+    return '';
+}
+
 // Helper function to handle the Aternos interaction
 async function startAternosServer(ctx) {
     let browser = null;
     // Set faster timeout for the final login wait
-    const FAST_TIMEOUT = 15000; 
+    const FAST_TIMEOUT = 15000;
     const SLOW_TIMEOUT = 90000;
+    const MAX_POLLS = 120; // Maximum number of status checks (120 * 10 seconds = 20 minutes)
+    const POLL_INTERVAL_MS = 10000; // Check status every 10 seconds
     let page = null; // Declare page outside try block for access in catch
 
     try {
@@ -44,7 +63,7 @@ async function startAternosServer(ctx) {
         // Launch browser with arguments optimized for Railway/Docker
         browser = await puppeteer.launch({
             // Use 'new' headless mode
-            headless: 'new', 
+            headless: 'new',
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -52,12 +71,12 @@ async function startAternosServer(ctx) {
                 '--single-process', // Often helps in containerized environments
                 '--no-zygote'
             ],
-            // PUPPETEER_EXECUTABLE_PATH is set in the Dockerfile 
+            // PUPPETEER_EXECUTABLE_PATH is set in the Dockerfile
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH
         });
 
         page = await browser.newPage();
-        
+
         // ** Set a realistic User Agent to improve stealth **
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36');
 
@@ -77,11 +96,11 @@ async function startAternosServer(ctx) {
         try {
             const cookieBtn = await page.waitForSelector('.cc-btn.cc-dismiss', { timeout: 5000 });
             if (cookieBtn) await cookieBtn.click();
-        } catch (e) {}
+        } catch (e) { /* ignore if element not found */ }
 
         // Type credentials
         await page.waitForSelector('.username', { visible: true, timeout: 60000 });
-        
+
         // FIX: Using page.evaluate() to directly set the value, which is more reliable than page.type()
         await page.evaluate((user, pass) => {
             document.querySelector('.username').value = user;
@@ -90,18 +109,18 @@ async function startAternosServer(ctx) {
 
         // Click login button
         await page.click('.login-button');
-        
-        // FIX: Replacing strict page.waitForNavigation() with a more reliable wait for a key element 
+
+        // FIX: Replacing strict page.waitForNavigation() with a more reliable wait for a key element
         // on the destination page (the server list/dashboard). We are using a fast timeout here.
         const dashboardSelector = '.server-body, .server-list, #start';
-        
+
         try {
-             // Use the fast timeout for the expected success state
-             await page.waitForSelector(dashboardSelector, { timeout: FAST_TIMEOUT });
+            // Use the fast timeout for the expected success state
+            await page.waitForSelector(dashboardSelector, { timeout: FAST_TIMEOUT });
         } catch (e) {
             // --- LOGIN FAILURE ANALYSIS ---
             const currentUrl = page.url();
-            
+
             // NEW: Attempt to extract the specific Aternos error message
             let loginErrorText = '';
             try {
@@ -127,75 +146,120 @@ async function startAternosServer(ctx) {
         // If we are on the server list page (account with multiple servers), click the first one
         if (page.url().includes('/servers')) {
             ctx.reply('🖱️ Found server list, clicking first server...');
-            await page.click('.server-body'); 
+            await page.click('.server-body');
             await page.waitForNavigation({ waitUntil: 'domcontentloaded' });
         }
 
-        // 3. Click Start
+        // 3. Initial Status Check
         ctx.reply('⚡ Looking for Start button and server status...');
-        
+
         // Wait for the main server interface (#start button is a reliable identifier for the dashboard)
         await page.waitForSelector('#start', { timeout: 30000 });
-        
+
         // CRITICAL FIX: Ensure the status label is present and visible before trying to read it
-        // The original selector '.status-label' seems to have changed. Using a more robust set of alternatives.
         const statusTextSelector = '.statuslabel-label';
         try {
             await page.waitForSelector(statusTextSelector, { visible: true, timeout: 15000 });
         } catch (e) {
-             throw new Error(`Server Status element not found. Aternos UI may have changed or failed to load completely. Failed to find any of the selectors: ${statusTextSelector}`);
+            const debugMsg = await dumpHtmlContent(page, 'initial_status_check');
+            throw new Error(`Server Status element not found. Aternos UI may have changed or failed to load completely. ${debugMsg}`);
         }
 
-        // Check status before clicking
-        const status = await page.$eval(statusTextSelector, el => el.innerText);
+        let status = await page.$eval(statusTextSelector, el => el.innerText);
+
         if (status.toLowerCase().includes('online')) {
             ctx.reply('✅ Server is already ONLINE!');
             await browser.close();
             return;
         }
 
-        // Click Start
-        ctx.reply('🖱️ Start button clicked. Waiting for confirmation...');
+        // 4. Click Start (if not online)
+        ctx.reply('🖱️ Server is offline. Clicking Start button...');
         await page.click('#start');
 
-        // 4. Handle Queue/Confirmation
-        try {
-            // Wait a moment for modals
-            await new Promise(r => setTimeout(r, 2000));
-            
-            // Look for the huge red notification "Confirm" button if queue is long
-            // Or the standard EULA accept button
-            const confirmSelector = '#confirm';
-            if (await page.$(confirmSelector) !== null) {
-                await page.click(confirmSelector);
-                ctx.reply('✅ Confirmed launch request.');
+        let pollCount = 0;
+        let isOnline = false;
+        let waitingOrQueue = false;
+
+        // 5. Polling Loop
+        while (pollCount < MAX_POLLS && !isOnline) {
+            pollCount++;
+            console.log(`Polling server status... (Attempt ${pollCount}/${MAX_POLLS})`);
+
+            // --- A. Confirmation/EULA Handler ---
+            try {
+                // Check for the huge red notification "Confirm" button or standard EULA accept button
+                const confirmSelector = '#confirm, .eula-accept-button';
+                const confirmBtn = await page.$(confirmSelector);
+                if (confirmBtn) {
+                    await confirmBtn.click();
+                    ctx.reply('✅ Confirmation/EULA button pressed.');
+                    // Wait for the modal to dismiss and page to update
+                    await new Promise(r => setTimeout(r, 3000));
+                }
+            } catch (e) {
+                // No confirmation needed or failed to click it
+                console.log("No confirmation modal found or failed to click.");
             }
-        } catch (e) {
-            // No confirmation needed or missed it
-            console.log("No confirmation modal found.");
+
+            // --- B. Status Check ---
+            try {
+                // Refresh the status text
+                status = await page.$eval(statusTextSelector, el => el.innerText);
+                const normalizedStatus = status.toLowerCase();
+
+                if (normalizedStatus.includes('online')) {
+                    isOnline = true;
+                    ctx.reply('🎉 Server is now **ONLINE**!');
+                } else if (normalizedStatus.includes('waiting') || normalizedStatus.includes('queue')) {
+                    waitingOrQueue = true;
+                    ctx.reply(`⏳ Server Status: **${status}** (Checking again in ${POLL_INTERVAL_MS / 1000}s)`);
+                    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+                } else if (normalizedStatus.includes('loading') || normalizedStatus.includes('starting')) {
+                    ctx.reply(`🔄 Server Status: **${status}** (Starting up...) (Checking again in ${POLL_INTERVAL_MS / 1000}s)`);
+                    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+                } else if (normalizedStatus.includes('stopping') || normalizedStatus.includes('offline')) {
+                    // CRITICAL: If the status reverts to offline/stopping, try clicking start again
+                    // This covers the case where a queue times out or a confirmation is missed.
+                    if (pollCount > 1) { // Only click again after the first attempt
+                        ctx.reply('⚠️ Server status reverted to offline/stopping. Clicking Start again...');
+                        await page.click('#start');
+                        await new Promise(r => setTimeout(r, 5000)); // Wait for page reaction
+                    }
+                    await new Promise(r => setTimeout(r, 5000)); // Short pause before next check
+                } else {
+                    // Catch-all for unknown states
+                    ctx.reply(`❓ Unknown Server Status: **${status}**. Will continue checking...`);
+                    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+                }
+
+            } catch (e) {
+                const debugMsg = await dumpHtmlContent(page, `status_poll_attempt_${pollCount}`);
+                ctx.reply(`❌ Server Status Check Failed on attempt ${pollCount}. ${debugMsg}`);
+                throw new Error(`Failed to read server status: ${e.message}`);
+            }
         }
 
-        ctx.reply('✅ Browser task finished. The server should be starting now.');
+        if (!isOnline) {
+            ctx.reply(`❌ Server did not start within the maximum time limit (approx. ${Math.round(MAX_POLLS * POLL_INTERVAL_MS / 60000)} minutes).`);
+        }
 
     } catch (error) {
-        if (error.message.includes('Waiting for selector `') && page) {
-            // Log the HTML content only if it failed to find a selector
-            const htmlContent = await page.content();
-            console.error("--- PAGE CONTENT DUMP ON SELECTOR FAILURE (START) ---");
-            console.error(htmlContent);
-            console.error("--- PAGE CONTENT DUMP ON SELECTOR FAILURE (END) ---");
-            
-            ctx.reply(`❌ Error: Bot failed to find a key element (Login Form, Dashboard, or Start Button). The raw page HTML has been dumped to the logs for inspection.`);
-        } else {
-            // Handle other errors normally
-            ctx.reply(`❌ Error: ${error.message}`);
+        // Handle all other errors, including fatal Puppeteer/Login errors
+        const context = 'final_catch';
+        let dumpMessage = '';
+        if (page) {
+             dumpMessage = await dumpHtmlContent(page, context);
         }
+        ctx.reply(`❌ **Fatal Process Error**: ${error.message} \n\n${dumpMessage}`);
         console.error(error);
     } finally {
         if (browser) await browser.close();
+        console.log('Browser closed.');
     }
 }
 
+// Bot Command Handler
 bot.command('start', (ctx) => {
     startAternosServer(ctx);
 });
