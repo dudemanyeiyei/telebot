@@ -33,8 +33,9 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 // Helper function to handle the Aternos interaction
 async function startAternosServer(ctx) {
     let browser = null;
-    // Set higher timeout for page actions
-    const PAGE_TIMEOUT = 90000; 
+    // Set faster timeout for the final login wait
+    const FAST_TIMEOUT = 15000; 
+    const SLOW_TIMEOUT = 90000;
     let page = null; // Declare page outside try block for access in catch
 
     try {
@@ -65,7 +66,7 @@ async function startAternosServer(ctx) {
 
         // 1. Login
         ctx.reply('🔑 Logging into Aternos...');
-        await page.goto('https://aternos.org/go/', { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
+        await page.goto('https://aternos.org/go/', { waitUntil: 'domcontentloaded', timeout: SLOW_TIMEOUT });
 
         // ** Adding a 5 second human-like pause after page load **
         console.log("Pausing for 5 seconds to simulate human behavior...");
@@ -79,7 +80,6 @@ async function startAternosServer(ctx) {
         } catch (e) {}
 
         // Type credentials
-        // The timeout here is still 60s
         await page.waitForSelector('.username', { visible: true, timeout: 60000 });
         
         // FIX: Using page.evaluate() to directly set the value, which is more reliable than page.type()
@@ -92,31 +92,41 @@ async function startAternosServer(ctx) {
         await page.click('.login-button');
         
         // FIX: Replacing strict page.waitForNavigation() with a more reliable wait for a key element 
-        // on the destination page (the server list/dashboard). This implicitly waits for the page load.
-        // We use a combination of known dashboard selectors.
+        // on the destination page (the server list/dashboard). We are using a fast timeout here.
         const dashboardSelector = '.server-body, .server-list, .server-name';
         
         try {
-             await page.waitForSelector(dashboardSelector, { timeout: PAGE_TIMEOUT });
+             // Use the fast timeout for the expected success state
+             await page.waitForSelector(dashboardSelector, { timeout: FAST_TIMEOUT });
         } catch (e) {
-            // If the dashboard element is not found, check if we failed to log in.
-            const urlStillLogin = page.url().includes('login');
+            // --- LOGIN FAILURE ANALYSIS ---
+            const currentUrl = page.url();
+            const htmlContent = await page.content();
+            
+            console.error(`--- LOGIN FAILURE ANALYSIS (START) ---`);
+            console.error(`URL AFTER CLICK: ${currentUrl}`);
+            console.error(htmlContent);
+            console.error(`--- LOGIN FAILURE ANALYSIS (END) ---`);
+
+            const urlStillLogin = currentUrl.includes('login');
             let loginErrorVisible = false;
             try {
-                // Check if a login error message element is visible
-                loginErrorVisible = await page.$eval('.login-error', el => el.innerText.trim() !== '').catch(() => false);
+                loginErrorVisible = await page.$eval('.login-error', el => {
+                    // Check if the error element exists AND has non-empty text
+                    return el && el.innerText.trim() !== ''; 
+                }).catch(() => false);
             } catch (innerError) { /* ignore if element not found */ }
 
             if (urlStillLogin || loginErrorVisible) {
-                // The bot is still stuck on the login page or an error appeared.
+                // We are still on the login page or a login error is showing.
                 throw new Error('Login failed. Aternos either rejected the credentials, showed a 2FA/CAPTCHA screen, or the username/password is wrong.');
             } else {
-                // If it wasn't a login failure, it was a navigation/load timeout. Re-throw as a clear timeout.
-                throw new Error(`Timeout exceeded while waiting for dashboard element (${dashboardSelector}).`);
+                // We left the login page but didn't find the dashboard in time (network issue/slow loading).
+                throw new Error(`Navigation failed or server dashboard did not load fast enough (>${FAST_TIMEOUT}ms). Current URL: ${currentUrl}`);
             }
         }
 
-        // The next block (server selection) assumes we are past the login page, which is now guaranteed by the try/catch above.
+        // The next block (server selection) assumes we are past the login page.
 
         // 2. Select Server
         // If we are on the server list page (account with multiple servers), click the first one
