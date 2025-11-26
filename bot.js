@@ -35,6 +35,7 @@ async function startAternosServer(ctx) {
     let browser = null;
     // Set higher timeout for page actions
     const PAGE_TIMEOUT = 90000; 
+    let page = null; // Declare page outside try block for access in catch
 
     try {
         ctx.reply('🚀 Launching browser... (This may take up to 2 minutes)');
@@ -54,9 +55,9 @@ async function startAternosServer(ctx) {
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH
         });
 
-        const page = await browser.newPage();
+        page = await browser.newPage();
         
-        // ** NEW: Set a realistic User Agent to improve stealth **
+        // ** Set a realistic User Agent to improve stealth **
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36');
 
         // set viewport to look like a real desktop
@@ -64,12 +65,15 @@ async function startAternosServer(ctx) {
 
         // 1. Login
         ctx.reply('🔑 Logging into Aternos...');
-        // ** MODIFIED: Changed waitUntil to 'domcontentloaded' to avoid infinite loading from tracking scripts **
         await page.goto('https://aternos.org/go/', { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
+
+        // ** Adding a 5 second human-like pause after page load **
+        console.log("Pausing for 5 seconds to simulate human behavior...");
+        await new Promise(r => setTimeout(r, 5000));
+        // End of pause
 
         // Accept cookies if the banner appears (try/catch to ignore if not present)
         try {
-            // Use a short timeout for cookies, as it's not critical
             const cookieBtn = await page.waitForSelector('.cc-btn.cc-dismiss', { timeout: 5000 });
             if (cookieBtn) await cookieBtn.click();
         } catch (e) {}
@@ -136,8 +140,19 @@ async function startAternosServer(ctx) {
         ctx.reply('✅ Browser task finished. The server should be starting now.');
 
     } catch (error) {
+        if (error.message.includes('Waiting for selector `#user` failed') && page) {
+            const htmlContent = await page.content();
+            // Log the HTML content to Railway logs
+            console.error("--- CAPTCHA/BLOCK DETECTED (HTML DUMP START) ---");
+            console.error(htmlContent);
+            console.error("--- CAPTCHA/BLOCK DETECTED (HTML DUMP END) ---");
+            
+            ctx.reply(`❌ Error: Bot could not find the login form. This is likely a Cloudflare/CAPTCHA block. The raw page HTML has been dumped to the logs for inspection.`);
+        } else {
+            // Handle other errors normally
+            ctx.reply(`❌ Error: ${error.message}`);
+        }
         console.error(error);
-        ctx.reply(`❌ Error: ${error.message}`);
     } finally {
         if (browser) await browser.close();
     }
