@@ -80,12 +80,15 @@ async function startAternosServer(ctx) {
 
         // Type credentials
         // The timeout here is still 60s
-        await page.waitForSelector('#user', { visible: true, timeout: 60000 });
-        await page.type('#user', process.env.ATERNOS_USER);
-        await page.type('#password', process.env.ATERNOS_PASS);
+        // FIX: Changed selector from '#user' to '.username' to match Aternos HTML
+        await page.waitForSelector('.username', { visible: true, timeout: 60000 });
+        await page.type('.username', process.env.ATERNOS_USER);
+        // FIX: Changed selector from '#password' to '.password' to match Aternos HTML
+        await page.type('.password', process.env.ATERNOS_PASS);
 
         // Click login button
-        await page.click('#login');
+        // FIX: Changed selector from '#login' to '.login-button' to match Aternos HTML
+        await page.click('.login-button');
         
         // Wait for navigation to the dashboard or server list
         await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
@@ -140,9 +143,9 @@ async function startAternosServer(ctx) {
         ctx.reply('✅ Browser task finished. The server should be starting now.');
 
     } catch (error) {
-        if (error.message.includes('Waiting for selector `#user` failed') && page) {
+        if (error.message.includes('Waiting for selector `') && page) {
+            // Log the HTML content only if it failed to find a selector
             const htmlContent = await page.content();
-            // Log the HTML content to Railway logs
             console.error("--- CAPTCHA/BLOCK DETECTED (HTML DUMP START) ---");
             console.error(htmlContent);
             console.error("--- CAPTCHA/BLOCK DETECTED (HTML DUMP END) ---");
