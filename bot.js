@@ -55,14 +55,17 @@ async function startAternosServer(ctx) {
         });
 
         const page = await browser.newPage();
+        
+        // ** NEW: Set a realistic User Agent to improve stealth **
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36');
 
         // set viewport to look like a real desktop
         await page.setViewport({ width: 1280, height: 800 });
 
         // 1. Login
         ctx.reply('🔑 Logging into Aternos...');
-        // Increased navigation timeout
-        await page.goto('https://aternos.org/go/', { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT });
+        // ** MODIFIED: Changed waitUntil to 'domcontentloaded' to avoid infinite loading from tracking scripts **
+        await page.goto('https://aternos.org/go/', { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
 
         // Accept cookies if the banner appears (try/catch to ignore if not present)
         try {
@@ -72,7 +75,7 @@ async function startAternosServer(ctx) {
         } catch (e) {}
 
         // Type credentials
-        // !!! INCREASED TIMEOUT HERE FOR THE FAILED SELECTOR !!!
+        // The timeout here is still 60s
         await page.waitForSelector('#user', { visible: true, timeout: 60000 });
         await page.type('#user', process.env.ATERNOS_USER);
         await page.type('#password', process.env.ATERNOS_PASS);
@@ -81,7 +84,7 @@ async function startAternosServer(ctx) {
         await page.click('#login');
         
         // Wait for navigation to the dashboard or server list
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT });
+        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
 
         // Check if login failed
         if (page.url().includes('login')) {
@@ -92,7 +95,7 @@ async function startAternosServer(ctx) {
         // If we are on the server list page (account with multiple servers), click the first one
         if (page.url().includes('/servers')) {
             await page.click('.server-body'); 
-            await page.waitForNavigation({ waitUntil: 'networkidle2' });
+            await page.waitForNavigation({ waitUntil: 'domcontentloaded' });
         }
 
         // 3. Click Start
