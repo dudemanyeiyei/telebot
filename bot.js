@@ -139,7 +139,7 @@ async function startAternosServer(ctx) {
         
         // CRITICAL FIX: Ensure the status label is present and visible before trying to read it
         // The original selector '.status-label' seems to have changed. Using a more robust set of alternatives.
-        const statusTextSelector = '.status-label-text, .server-status-text, .status-label, #status-text';
+        const statusTextSelector = '.statuslabel-label';
         try {
             await page.waitForSelector(statusTextSelector, { visible: true, timeout: 15000 });
         } catch (e) {
