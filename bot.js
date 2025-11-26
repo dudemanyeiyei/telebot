@@ -93,7 +93,7 @@ async function startAternosServer(ctx) {
         
         // FIX: Replacing strict page.waitForNavigation() with a more reliable wait for a key element 
         // on the destination page (the server list/dashboard). We are using a fast timeout here.
-        const dashboardSelector = '.server-body, .server-list, .server-name';
+        const dashboardSelector = '.server-body, .server-list, #start';
         
         try {
              // Use the fast timeout for the expected success state
@@ -101,46 +101,49 @@ async function startAternosServer(ctx) {
         } catch (e) {
             // --- LOGIN FAILURE ANALYSIS ---
             const currentUrl = page.url();
-            const htmlContent = await page.content();
             
-            console.error(`--- LOGIN FAILURE ANALYSIS (START) ---`);
-            console.error(`URL AFTER CLICK: ${currentUrl}`);
-            console.error(htmlContent);
-            console.error(`--- LOGIN FAILURE ANALYSIS (END) ---`);
-
-            const urlStillLogin = currentUrl.includes('login');
-            let loginErrorVisible = false;
+            // NEW: Attempt to extract the specific Aternos error message
+            let loginErrorText = '';
             try {
-                loginErrorVisible = await page.$eval('.login-error', el => {
-                    // Check if the error element exists AND has non-empty text
-                    return el && el.innerText.trim() !== ''; 
-                }).catch(() => false);
+                // Look specifically for the text within the error span
+                loginErrorText = await page.$eval('.login-error .error-message', el => el.innerText.trim());
             } catch (innerError) { /* ignore if element not found */ }
 
-            if (urlStillLogin || loginErrorVisible) {
-                // We are still on the login page or a login error is showing.
-                throw new Error('Login failed. Aternos either rejected the credentials, showed a 2FA/CAPTCHA screen, or the username/password is wrong.');
+            const urlStillLogin = currentUrl.includes('login');
+
+            if (urlStillLogin && loginErrorText) {
+                // We are still on the login page and an Aternos error is showing.
+                throw new Error(`Aternos Login Failed: ${loginErrorText}. Please check your ATERNOS_USER and ATERNOS_PASS environment variables.`);
+            } else if (urlStillLogin) {
+                // We are still on the login page but no explicit Aternos error was detected (might be 2FA prompt or HCAPTCHA block).
+                throw new Error('Login failed. Aternos might be asking for a 2FA code or a silent CAPTCHA block occurred.');
             } else {
-                // We left the login page but didn't find the dashboard in time (network issue/slow loading).
+                // We left the login page but didn't find the dashboard/server list in time (network issue/slow loading).
                 throw new Error(`Navigation failed or server dashboard did not load fast enough (>${FAST_TIMEOUT}ms). Current URL: ${currentUrl}`);
             }
         }
 
-        // The next block (server selection) assumes we are past the login page.
-
         // 2. Select Server
         // If we are on the server list page (account with multiple servers), click the first one
         if (page.url().includes('/servers')) {
+            ctx.reply('🖱️ Found server list, clicking first server...');
             await page.click('.server-body'); 
             await page.waitForNavigation({ waitUntil: 'domcontentloaded' });
         }
 
         // 3. Click Start
-        ctx.reply('⚡ Looking for Start button...');
+        ctx.reply('⚡ Looking for Start button and server status...');
         
-        // Wait for the main server interface
+        // Wait for the main server interface (#start button is a reliable identifier for the dashboard)
         await page.waitForSelector('#start', { timeout: 30000 });
         
+        // CRITICAL FIX: Ensure the status label is present and visible before trying to read it
+        try {
+            await page.waitForSelector('.status-label', { visible: true, timeout: 15000 });
+        } catch (e) {
+             throw new Error("Server Status element not found. Aternos UI may have changed or failed to load completely. Failed to find '.status-label'");
+        }
+
         // Check status before clicking
         const status = await page.$eval('.status-label', el => el.innerText);
         if (status.toLowerCase().includes('online')) {
@@ -150,8 +153,8 @@ async function startAternosServer(ctx) {
         }
 
         // Click Start
-        await page.click('#start');
         ctx.reply('🖱️ Start button clicked. Waiting for confirmation...');
+        await page.click('#start');
 
         // 4. Handle Queue/Confirmation
         try {
