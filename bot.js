@@ -138,14 +138,16 @@ async function startAternosServer(ctx) {
         await page.waitForSelector('#start', { timeout: 30000 });
         
         // CRITICAL FIX: Ensure the status label is present and visible before trying to read it
+        // The original selector '.status-label' seems to have changed. Using a more robust set of alternatives.
+        const statusTextSelector = '.status-label-text, .server-status-text, .status-label, #status-text';
         try {
-            await page.waitForSelector('.status-label', { visible: true, timeout: 15000 });
+            await page.waitForSelector(statusTextSelector, { visible: true, timeout: 15000 });
         } catch (e) {
-             throw new Error("Server Status element not found. Aternos UI may have changed or failed to load completely. Failed to find '.status-label'");
+             throw new Error(`Server Status element not found. Aternos UI may have changed or failed to load completely. Failed to find any of the selectors: ${statusTextSelector}`);
         }
 
         // Check status before clicking
-        const status = await page.$eval('.status-label', el => el.innerText);
+        const status = await page.$eval(statusTextSelector, el => el.innerText);
         if (status.toLowerCase().includes('online')) {
             ctx.reply('✅ Server is already ONLINE!');
             await browser.close();
