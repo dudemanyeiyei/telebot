@@ -7,7 +7,10 @@ console.log("--- DEBUG: ENVIRONMENT VARIABLES CHECK ---");
 console.log("Available Environment Keys:", Object.keys(process.env));
 
 if (process.env.TELEGRAM_BOT_TOKEN) {
+    // Show the first 5 characters to help verify it's the right token
+    const tokenPreview = process.env.TELEGRAM_BOT_TOKEN.substring(0, 5) + "...";
     console.log(`✅ TELEGRAM_BOT_TOKEN found (Length: ${process.env.TELEGRAM_BOT_TOKEN.length})`);
+    console.log(`🔎 Token starts with: "${tokenPreview}" (Check if this matches BotFather)`);
 } else {
     console.error("❌ TELEGRAM_BOT_TOKEN is MISSING or UNDEFINED");
 }
@@ -30,12 +33,16 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 // Helper function to handle the Aternos interaction
 async function startAternosServer(ctx) {
     let browser = null;
+    // Set higher timeout for page actions
+    const PAGE_TIMEOUT = 90000; 
+
     try {
         ctx.reply('🚀 Launching browser... (This may take up to 2 minutes)');
 
         // Launch browser with arguments optimized for Railway/Docker
         browser = await puppeteer.launch({
-            headless: 'new', // Use new headless mode
+            // Use 'new' headless mode
+            headless: 'new', 
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -43,7 +50,8 @@ async function startAternosServer(ctx) {
                 '--single-process', // Often helps in containerized environments
                 '--no-zygote'
             ],
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
+            // PUPPETEER_EXECUTABLE_PATH is set in the Dockerfile 
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH
         });
 
         const page = await browser.newPage();
@@ -53,16 +61,19 @@ async function startAternosServer(ctx) {
 
         // 1. Login
         ctx.reply('🔑 Logging into Aternos...');
-        await page.goto('https://aternos.org/go/', { waitUntil: 'networkidle2', timeout: 60000 });
+        // Increased navigation timeout
+        await page.goto('https://aternos.org/go/', { waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT });
 
         // Accept cookies if the banner appears (try/catch to ignore if not present)
         try {
+            // Use a short timeout for cookies, as it's not critical
             const cookieBtn = await page.waitForSelector('.cc-btn.cc-dismiss', { timeout: 5000 });
             if (cookieBtn) await cookieBtn.click();
         } catch (e) {}
 
         // Type credentials
-        await page.waitForSelector('#user', { visible: true });
+        // !!! INCREASED TIMEOUT HERE FOR THE FAILED SELECTOR !!!
+        await page.waitForSelector('#user', { visible: true, timeout: 60000 });
         await page.type('#user', process.env.ATERNOS_USER);
         await page.type('#password', process.env.ATERNOS_PASS);
 
@@ -70,11 +81,11 @@ async function startAternosServer(ctx) {
         await page.click('#login');
         
         // Wait for navigation to the dashboard or server list
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 });
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: PAGE_TIMEOUT });
 
         // Check if login failed
         if (page.url().includes('login')) {
-            throw new Error('Login failed. Check your username/password.');
+            throw new Error('Login failed. Check your username/password. Aternos might also be showing a CAPTCHA/Cloudflare screen that the bot cannot pass.');
         }
 
         // 2. Select Server
@@ -133,8 +144,20 @@ bot.command('start', (ctx) => {
     startAternosServer(ctx);
 });
 
+// Enhanced launch with error handling for 401 Unauthorized
 bot.launch().then(() => {
     console.log('Bot is running...');
+}).catch((err) => {
+    console.error("❌ FAILED TO LAUNCH BOT");
+    if (err.response && err.response.error_code === 401) {
+        console.error("🚨 ERROR 401: Unauthorized. Your TELEGRAM_BOT_TOKEN is wrong.");
+        console.error("   - Check for leading/trailing spaces in Railway variables.");
+        console.error("   - Check if you copied the whole token.");
+        console.error("   - Generate a new token in @BotFather.");
+    } else {
+        console.error(err);
+    }
+    process.exit(1);
 });
 
 // Enable graceful stop
