@@ -80,21 +80,23 @@ async function startAternosServer(ctx) {
 
         // Type credentials
         // The timeout here is still 60s
-        // FIX: Changed selector from '#user' to '.username' to match Aternos HTML
-        await page.waitForSelector('.username', { visible: true, timeout: 60000 });
-        await page.type('.username', process.env.ATERNOS_USER);
-        // FIX: Changed selector from '#password' to '.password' to match Aternos HTML
-        await page.type('.password', process.env.ATERNOS_PASS);
+        await page.waitForSelector('.username', { visible: true, timeout: 30000 });
+        
+        // FIX: Using page.evaluate() to directly set the value, which is more reliable than page.type()
+        await page.evaluate((user, pass) => {
+            document.querySelector('.username').value = user;
+            document.querySelector('.password').value = pass;
+        }, process.env.ATERNOS_USER, process.env.ATERNOS_PASS);
 
         // Click login button
-        // FIX: Changed selector from '#login' to '.login-button' to match Aternos HTML
         await page.click('.login-button');
         
-        // Wait for navigation to the dashboard or server list
+        // Wait for navigation AND for a key element on the destination page (the server list)
+        // Aternos redirects to the server list page upon successful login
         await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
-
-        // Check if login failed
-        if (page.url().includes('login')) {
+        
+        // Check if login failed (by checking if we are still on the login page URL or if an error message is visible)
+        if (page.url().includes('login') || (await page.$('.login-error') !== null && await page.$eval('.login-error', el => el.innerText.trim() !== ''))) {
             throw new Error('Login failed. Check your username/password. Aternos might also be showing a CAPTCHA/Cloudflare screen that the bot cannot pass.');
         }
 
