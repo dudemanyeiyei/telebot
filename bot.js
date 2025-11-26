@@ -80,7 +80,7 @@ async function startAternosServer(ctx) {
 
         // Type credentials
         // The timeout here is still 60s
-        await page.waitForSelector('.username', { visible: true, timeout: 30000 });
+        await page.waitForSelector('.username', { visible: true, timeout: 60000 });
         
         // FIX: Using page.evaluate() to directly set the value, which is more reliable than page.type()
         await page.evaluate((user, pass) => {
@@ -91,14 +91,32 @@ async function startAternosServer(ctx) {
         // Click login button
         await page.click('.login-button');
         
-        // Wait for navigation AND for a key element on the destination page (the server list)
-        // Aternos redirects to the server list page upon successful login
-        await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
+        // FIX: Replacing strict page.waitForNavigation() with a more reliable wait for a key element 
+        // on the destination page (the server list/dashboard). This implicitly waits for the page load.
+        // We use a combination of known dashboard selectors.
+        const dashboardSelector = '.server-body, .server-list, .server-name';
         
-        // Check if login failed (by checking if we are still on the login page URL or if an error message is visible)
-        if (page.url().includes('login') || (await page.$('.login-error') !== null && await page.$eval('.login-error', el => el.innerText.trim() !== ''))) {
-            throw new Error('Login failed. Check your username/password. Aternos might also be showing a CAPTCHA/Cloudflare screen that the bot cannot pass.');
+        try {
+             await page.waitForSelector(dashboardSelector, { timeout: PAGE_TIMEOUT });
+        } catch (e) {
+            // If the dashboard element is not found, check if we failed to log in.
+            const urlStillLogin = page.url().includes('login');
+            let loginErrorVisible = false;
+            try {
+                // Check if a login error message element is visible
+                loginErrorVisible = await page.$eval('.login-error', el => el.innerText.trim() !== '').catch(() => false);
+            } catch (innerError) { /* ignore if element not found */ }
+
+            if (urlStillLogin || loginErrorVisible) {
+                // The bot is still stuck on the login page or an error appeared.
+                throw new Error('Login failed. Aternos either rejected the credentials, showed a 2FA/CAPTCHA screen, or the username/password is wrong.');
+            } else {
+                // If it wasn't a login failure, it was a navigation/load timeout. Re-throw as a clear timeout.
+                throw new Error(`Timeout exceeded while waiting for dashboard element (${dashboardSelector}).`);
+            }
         }
+
+        // The next block (server selection) assumes we are past the login page, which is now guaranteed by the try/catch above.
 
         // 2. Select Server
         // If we are on the server list page (account with multiple servers), click the first one
@@ -148,11 +166,11 @@ async function startAternosServer(ctx) {
         if (error.message.includes('Waiting for selector `') && page) {
             // Log the HTML content only if it failed to find a selector
             const htmlContent = await page.content();
-            console.error("--- CAPTCHA/BLOCK DETECTED (HTML DUMP START) ---");
+            console.error("--- PAGE CONTENT DUMP ON SELECTOR FAILURE (START) ---");
             console.error(htmlContent);
-            console.error("--- CAPTCHA/BLOCK DETECTED (HTML DUMP END) ---");
+            console.error("--- PAGE CONTENT DUMP ON SELECTOR FAILURE (END) ---");
             
-            ctx.reply(`❌ Error: Bot could not find the login form. This is likely a Cloudflare/CAPTCHA block. The raw page HTML has been dumped to the logs for inspection.`);
+            ctx.reply(`❌ Error: Bot failed to find a key element (Login Form, Dashboard, or Start Button). The raw page HTML has been dumped to the logs for inspection.`);
         } else {
             // Handle other errors normally
             ctx.reply(`❌ Error: ${error.message}`);
